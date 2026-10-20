@@ -70,7 +70,7 @@ Your AI assistant will automatically read [`ai_agent_instructions.md`](ai_agent_
 |------|-------------|----------|
 | **🔍 Keyword Search** | SQL `ILIKE` query on talk text | Conference data imported |
 | **🧠 Semantic Search** | Vector similarity with pgvector | Embeddings + `embed-question` Edge Function |
-| **🤖 Ask a Question (RAG)** | AI-generated answers with sources | All Edge Functions deployed |
+| **🤖 Ask a Question (RAG)** | AI-generated answers with linked talk citations and an optional speaker filter | All Edge Functions deployed |
 
 ## 📁 Project Structure
 

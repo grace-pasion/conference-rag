@@ -31,6 +31,7 @@ This script creates:
 - **`page_views` table** — Records every page visit (🌍 **public**)
 - **RLS policies** — Controls who can access each table
 - **`match_sentences()` function** — A stored procedure for vector similarity search
+- **Speaker-filter functions** — Lists available speakers and searches only a selected speaker's talks
 
 > 💡 **Ask your AI assistant**: *"What is pgvector and how does cosine similarity search work?"*
 

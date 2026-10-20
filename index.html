@@ -125,6 +125,13 @@
                     </div>
                     <p class="panel-description">Get AI-generated answers based on conference talks. Requires all Edge
                         Functions deployed.</p>
+                    <div class="rag-filter">
+                        <label for="rag-speaker-filter">Filter talks by speaker</label>
+                        <select id="rag-speaker-filter" disabled>
+                            <option value="">All speakers</option>
+                        </select>
+                        <span id="rag-speaker-status" class="filter-status" role="status" aria-live="polite"></span>
+                    </div>
                     <div class="panel-input">
                         <input type="text" id="rag-input" placeholder="Ask a question about conference talks..."
                             autocomplete="off" disabled />

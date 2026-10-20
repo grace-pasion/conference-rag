@@ -39,6 +39,8 @@ function initializeSupabase() {
                 if (event === 'SIGNED_IN' && session) {
                     showApp(session.user);
                 } else if (event === 'SIGNED_OUT') {
+                    embeddingCache.clear();
+                    if (ragSpeakerFilter) ragSpeakerFilter.value = '';
                     showLogin();
                 }
             });
@@ -83,6 +85,12 @@ const ragInput = document.getElementById('rag-input');
 const ragBtn = document.getElementById('rag-btn');
 const ragResults = document.getElementById('rag-results');
 const ragStatus = document.getElementById('rag-status');
+const ragSpeakerFilter = document.getElementById('rag-speaker-filter');
+const ragSpeakerStatus = document.getElementById('rag-speaker-status');
+const embeddingCache = new Map();
+const embeddingCacheLimit = 50;
+let speakerOptionsLoaded = false;
+let speakerOptionsLoading = false;
 
 // ============================================
 // SETUP BANNER DETECTION
@@ -284,6 +292,7 @@ function showApp(user) {
     if (loginScreen) loginScreen.classList.add('hidden');
     if (appScreen) appScreen.classList.remove('hidden');
     if (userEmailSpan) userEmailSpan.textContent = user.email;
+    loadSpeakerOptions();
     // Check search readiness when user logs in
     checkSearchReadiness();
 }
@@ -531,7 +540,16 @@ async function askQuestion() {
         const embedding = await getEmbedding(question);
 
         // Step 2: Search for similar sentences
-        const results = await searchSentences(embedding);
+        const speakerFilter = ragSpeakerFilter ? ragSpeakerFilter.value : '';
+        const results = await searchSentences(embedding, speakerFilter);
+
+        if (!results || results.length === 0) {
+            showResults(
+                'rag',
+                `<div class="no-results">No matching talks found${speakerFilter ? ` for ${escapeHtml(formatSpeaker(speakerFilter))}` : ''}. Try another speaker or choose All speakers.</div>`
+            );
+            return;
+        }
 
         // Step 3: Group by talk (with similarity scores and URLs)
         const topTalks = groupByTalk(results);
@@ -553,7 +571,7 @@ async function askQuestion() {
                 <div class="result-title">AI Answer</div>
                 ${overallBadge}
             </div>
-            <div class="result-sentences">${escapeHtml(answer)}</div>
+            <div class="result-sentences">${renderAnswerWithCitations(answer, enrichedTalks)}</div>
         </div>`;
 
         // Show source talks with per-talk similarity badges and links
@@ -585,25 +603,59 @@ async function askQuestion() {
 
 // Get embedding via Edge Function
 async function getEmbedding(text) {
-    const { data, error } = await supabaseClient.functions.invoke('embed-question', {
-        body: { question: text }
-    });
+    const cacheKey = text.trim().replace(/\s+/g, ' ');
+    if (!cacheKey) throw new Error('Question cannot be empty');
 
-    if (error) {
-        throw new Error(data?.error || 'Failed to get embedding');
+    const cached = embeddingCache.get(cacheKey);
+    if (cached) {
+        embeddingCache.delete(cacheKey);
+        embeddingCache.set(cacheKey, cached);
+        return cached;
     }
 
-    return data.embedding;
+    const embeddingRequest = (async () => {
+        const { data, error } = await supabaseClient.functions.invoke('embed-question', {
+            body: { question: cacheKey }
+        });
+
+        if (error) {
+            throw new Error(data?.error || 'Failed to get embedding');
+        }
+        if (!Array.isArray(data?.embedding)) {
+            throw new Error('Embedding service returned an invalid embedding');
+        }
+
+        return data.embedding;
+    })();
+
+    embeddingCache.set(cacheKey, embeddingRequest);
+    if (embeddingCache.size > embeddingCacheLimit) {
+        const oldestKey = embeddingCache.keys().next().value;
+        embeddingCache.delete(oldestKey);
+    }
+
+    try {
+        return await embeddingRequest;
+    } catch (error) {
+        if (embeddingCache.get(cacheKey) === embeddingRequest) {
+            embeddingCache.delete(cacheKey);
+        }
+        throw error;
+    }
 }
 
 // Search sentences using vector similarity
-async function searchSentences(embedding) {
+async function searchSentences(embedding, speakerFilter = '') {
     if (!supabaseClient) throw new Error('Supabase not configured');
 
-    const { data, error } = await supabaseClient.rpc('match_sentences', {
+    const rpcName = speakerFilter ? 'match_sentences_by_speaker' : 'match_sentences';
+    const parameters = {
         query_embedding: embedding,
         match_count: 20
-    });
+    };
+    if (speakerFilter) parameters.speaker_filter = speakerFilter;
+
+    const { data, error } = await supabaseClient.rpc(rpcName, parameters);
 
     if (error) throw new Error(`Database search failed: ${error.message}`);
     return data;
@@ -718,6 +770,85 @@ function escapeHtml(text) {
 function formatSpeaker(speaker) {
     const name = typeof speaker === 'string' && speaker.trim() ? speaker.trim() : 'Unknown';
     return name.replace(/^by\s+/i, '');
+}
+
+function renderAnswerWithCitations(answer, talks) {
+    const byCitation = new Map();
+    const byTitle = new Map();
+
+    for (const talk of talks) {
+        byTitle.set(talk.title.trim().toLowerCase(), talk);
+        for (const speaker of [talk.speaker, formatSpeaker(talk.speaker)]) {
+            if (speaker) {
+                byCitation.set(`${talk.title} — ${speaker}`.trim().toLowerCase(), talk);
+            }
+        }
+    }
+
+    const citationPattern = /\[([^\]]+)\]/g;
+    let html = '';
+    let lastIndex = 0;
+    let match;
+
+    while ((match = citationPattern.exec(answer)) !== null) {
+        html += escapeHtml(answer.slice(lastIndex, match.index));
+        const citation = match[1].trim();
+        const citedTitle = citation.split(/\s+[—–-]\s+/)[0].trim().toLowerCase();
+        const talk = byCitation.get(citation.toLowerCase()) || byTitle.get(citedTitle);
+        const url = talk ? safeTalkUrl(talk.url) : null;
+
+        if (url) {
+            html += `<a class="result-citation" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Read the full talk">${escapeHtml(match[0])}</a>`;
+        } else {
+            html += escapeHtml(match[0]);
+        }
+        lastIndex = citationPattern.lastIndex;
+    }
+
+    return html + escapeHtml(answer.slice(lastIndex));
+}
+
+function safeTalkUrl(value) {
+    if (typeof value !== 'string') return null;
+
+    try {
+        const url = new URL(value);
+        if (url.protocol === 'https:' && url.hostname === 'www.churchofjesuschrist.org') {
+            return url.href;
+        }
+    } catch {
+        return null;
+    }
+    return null;
+}
+
+async function loadSpeakerOptions() {
+    if (!supabaseClient || !ragSpeakerFilter || speakerOptionsLoaded || speakerOptionsLoading) return;
+    speakerOptionsLoading = true;
+
+    try {
+        const { data, error } = await supabaseClient.rpc('list_talk_speakers');
+        if (error) throw new Error(error.message);
+        if (!Array.isArray(data)) throw new Error('Speaker list response was invalid');
+
+        const currentSpeaker = ragSpeakerFilter.value;
+        ragSpeakerFilter.replaceChildren(new Option('All speakers', ''));
+        for (const row of data) {
+            if (typeof row.speaker !== 'string' || !row.speaker.trim()) continue;
+            ragSpeakerFilter.add(new Option(formatSpeaker(row.speaker), row.speaker));
+        }
+        ragSpeakerFilter.value = currentSpeaker;
+        ragSpeakerFilter.disabled = false;
+        if (ragSpeakerStatus) ragSpeakerStatus.textContent = '';
+        speakerOptionsLoaded = true;
+    } catch (error) {
+        console.error('Could not load RAG speaker options:', error);
+        if (ragSpeakerStatus) {
+            ragSpeakerStatus.textContent = 'Speaker filter could not be loaded. Refresh to try again.';
+        }
+    } finally {
+        speakerOptionsLoading = false;
+    }
 }
 
 // Similarity badge with color coding

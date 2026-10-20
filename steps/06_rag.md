@@ -82,6 +82,12 @@ Try asking: *"What have church leaders taught about prayer?"*
 
 You should get an AI-generated answer with source citations!
 
+### RAG quality-of-life features
+
+- **Speaker filter:** Choose a speaker to restrict retrieval to that speaker's talks before similarity ranking.
+- **Embedding cache:** Repeated questions reuse their embedding in the current browser session instead of calling OpenAI again.
+- **Citation links:** Inline citations link to the original talk, and source cards open the full talk.
+
 ### Troubleshooting
 
 | Issue | Solution |

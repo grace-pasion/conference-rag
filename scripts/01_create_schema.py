@@ -127,6 +127,58 @@ AS $$
   ORDER BY sentence_embeddings.embedding <=> query_embedding
   LIMIT match_count;
 $$;
+
+-- List available speakers for the RAG filter
+CREATE OR REPLACE FUNCTION list_talk_speakers()
+RETURNS TABLE (speaker text)
+LANGUAGE sql STABLE
+AS $$
+  SELECT DISTINCT sentence_embeddings.speaker
+  FROM sentence_embeddings
+  WHERE sentence_embeddings.speaker IS NOT NULL
+    AND btrim(sentence_embeddings.speaker) <> ''
+  ORDER BY sentence_embeddings.speaker;
+$$;
+
+-- Filter the candidate set before exact cosine ranking
+CREATE OR REPLACE FUNCTION match_sentences_by_speaker(
+  query_embedding vector(1536),
+  speaker_filter text,
+  match_count int DEFAULT 20
+)
+RETURNS TABLE (
+  id uuid,
+  talk_id uuid,
+  title text,
+  speaker text,
+  text text,
+  similarity float
+)
+LANGUAGE sql STABLE
+AS $$
+  WITH speaker_sentences AS MATERIALIZED (
+    SELECT
+      sentence_embeddings.id,
+      sentence_embeddings.talk_id,
+      sentence_embeddings.title,
+      sentence_embeddings.speaker,
+      sentence_embeddings.text,
+      sentence_embeddings.embedding
+    FROM sentence_embeddings
+    WHERE sentence_embeddings.speaker = speaker_filter
+      AND sentence_embeddings.embedding IS NOT NULL
+  )
+  SELECT
+    speaker_sentences.id,
+    speaker_sentences.talk_id,
+    speaker_sentences.title,
+    speaker_sentences.speaker,
+    speaker_sentences.text,
+    1 - (speaker_sentences.embedding <=> query_embedding) as similarity
+  FROM speaker_sentences
+  ORDER BY speaker_sentences.embedding <=> query_embedding
+  LIMIT match_count;
+$$;
 """
 
     url = f"https://api.supabase.com/v1/projects/{SUPABASE_PROJECT_REF}/database/query"
