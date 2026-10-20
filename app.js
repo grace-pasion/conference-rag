@@ -499,7 +499,7 @@ async function semanticSearch() {
                 <div class="result-card-header">
                     <div>
                         <div class="result-title"><a href="${escapeHtml(result.url)}" target="_blank" class="result-title-link">${escapeHtml(result.title)}</a></div>
-                        <div class="result-speaker">by ${escapeHtml(result.speaker)}</div>
+                        <div class="result-speaker">by ${escapeHtml(formatSpeaker(result.speaker))}</div>
                     </div>
                     ${badge}
                 </div>
@@ -543,7 +543,7 @@ async function askQuestion() {
         const answer = await generateAnswer(question, enrichedTalks);
 
         // Compute overall similarity (weighted avg across source talks)
-        const overallSimilarity = topTalks.reduce((sum, t) => sum + t.avgSimilarity, 0) / topTalks.length;
+        const overallSimilarity = topTalks.reduce((sum, talk) => sum + talk.similarity, 0) / topTalks.length;
         const overallBadge = similarityBadge(overallSimilarity);
         const simClass = overallSimilarity >= 0.70 ? 'similarity-high'
             : overallSimilarity >= 0.40 ? 'similarity-mid' : 'similarity-low';
@@ -559,12 +559,12 @@ async function askQuestion() {
         // Show source talks with per-talk similarity badges and links
         html += '<div class="result-sources"><strong>Sources:</strong></div>';
         for (const talk of topTalks) {
-            const talkBadge = similarityBadge(talk.avgSimilarity);
+            const talkBadge = similarityBadge(talk.similarity);
             html += `<div class="result-card result-source">
                 <div class="result-card-header">
                     <div>
                         <div class="result-title"><a href="${escapeHtml(talk.url)}" target="_blank" class="result-title-link">${escapeHtml(talk.title)}</a></div>
-                        <div class="result-speaker">by ${escapeHtml(talk.speaker)}</div>
+                        <div class="result-speaker">by ${escapeHtml(formatSpeaker(talk.speaker))}</div>
                     </div>
                     ${talkBadge}
                 </div>
@@ -621,15 +621,15 @@ function groupByTalk(sentences) {
                 speaker: sent.speaker,
                 url: sent.url,
                 sentences: [],
-                totalSimilarity: 0
+                similarity: sent.similarity
             };
         }
         talkMap[sent.talk_id].sentences.push(sent.text);
-        talkMap[sent.talk_id].totalSimilarity += sent.similarity;
+        talkMap[sent.talk_id].similarity = Math.max(talkMap[sent.talk_id].similarity, sent.similarity);
     }
 
     return Object.values(talkMap)
-        .sort((a, b) => b.totalSimilarity / b.sentences.length - a.totalSimilarity / a.sentences.length)
+        .sort((a, b) => b.similarity - a.similarity)
         .slice(0, 3)
         .map(talk => ({
             talk_id: talk.talk_id,
@@ -637,11 +637,7 @@ function groupByTalk(sentences) {
             speaker: talk.speaker,
             url: talk.url,
             text: talk.sentences.join(' '),
-            // TODO: Is average similarity the right metric? Alternatives worth researching:
-            // - Max similarity (best single match per talk)
-            // - Average of top-3 sentences (reduces noise from weak matches)
-            // - Weighted by sentence count (rewards talks with more matches)
-            avgSimilarity: talk.totalSimilarity / talk.sentences.length
+            similarity: talk.similarity
         }));
 }
 
@@ -654,7 +650,7 @@ async function fetchFullTalkText(talks) {
 
     const { data, error } = await supabaseClient
         .from('sentence_embeddings')
-        .select('talk_id, sentence_num, text')
+        .select('talk_id, sentence_num, text, url')
         .in('talk_id', talkIds)
         .order('talk_id')
         .order('sentence_num');
@@ -666,14 +662,17 @@ async function fetchFullTalkText(talks) {
 
     // Group fetched sentences by talk_id
     const fullTextMap = {};
+    const talkUrlMap = {};
     for (const row of data) {
         if (!fullTextMap[row.talk_id]) fullTextMap[row.talk_id] = [];
         fullTextMap[row.talk_id].push(row.text);
+        if (!talkUrlMap[row.talk_id]) talkUrlMap[row.talk_id] = row.url;
     }
 
     // Replace snippet text with full talk text
     return talks.map(talk => ({
         ...talk,
+        url: talkUrlMap[talk.talk_id] || talk.url,
         text: fullTextMap[talk.talk_id]
             ? fullTextMap[talk.talk_id].join(' ')
             : talk.text
@@ -714,6 +713,11 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+function formatSpeaker(speaker) {
+    const name = typeof speaker === 'string' && speaker.trim() ? speaker.trim() : 'Unknown';
+    return name.replace(/^by\s+/i, '');
 }
 
 // Similarity badge with color coding
